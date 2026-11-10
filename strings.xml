@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AutoTyper</string>
+    <string name="service_desc">Вводит заданный текст в выбранное поле ввода по символам.</string>
+</resources>
