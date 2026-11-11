@@ -21,6 +21,10 @@ import kotlin.random.Random
 class TyperService : AccessibilityService() {
     companion object {
         @Volatile var instance: TyperService? = null
+
+        private const val MIN_SET_TEXT_INTERVAL_MS = 30L
+        private const val MAX_SEND_TREE_DEPTH = 40
+        private const val MAX_SEND_TREE_NODES = 1500
     }
 
     private sealed class Action {
@@ -43,7 +47,7 @@ class TyperService : AccessibilityService() {
     private var cachedInput: AccessibilityNodeInfo? = null
     private var lostFocusTicks = 0
     private var lastTypo = false
-    private var sentInPart = false
+    private var sendAttemptedInPart = false
     private var lastSetTextAt = 0L
 
     override fun onServiceConnected() {
@@ -102,15 +106,18 @@ class TyperService : AccessibilityService() {
         return if (node != null && node.isEditable && node.isFocused) node else null
     }
 
+    /** Reuse the cached node; traverse the window only when it has gone stale or lost focus. */
     private fun currentInput(): AccessibilityNodeInfo? {
         val cached = cachedInput
         if (cached != null) {
-            val refreshed = try { cached.refresh() } catch (_: Exception) { false }
+            val refreshed = try {
+                cached.refresh()
+            } catch (_: Exception) {
+                false
+            }
             if (refreshed && cached.isEditable && cached.isFocused) return cached
         }
-        val replacement = focusedInput()
-        cachedInput = replacement
-        return replacement
+        return focusedInput().also { cachedInput = it }
     }
 
     private fun tryStart() {
@@ -136,7 +143,7 @@ class TyperService : AccessibilityService() {
         cachedInput = node
         lostFocusTicks = 0
         lastTypo = false
-        sentInPart = false
+        sendAttemptedInPart = false
         lastSetTextAt = 0L
         typing = true
         tick()
@@ -145,15 +152,15 @@ class TyperService : AccessibilityService() {
     private fun parsePart(input: String): List<Action> {
         val result = mutableListOf<Action>()
         var cursor = 0
-        val regex = Regex("\\{([^\\}]+)\\}")
-        for (match in regex.findAll(input)) {
+        val tokenRegex = Regex("\\{([^{}]+)\\}")
+        for (match in tokenRegex.findAll(input)) {
             appendText(result, input.substring(cursor, match.range.first))
             val token = match.groupValues[1].trim()
             when {
                 token.equals("ENTER", ignoreCase = true) -> result += Action.Enter
                 token.equals("BACK", ignoreCase = true) -> result += Action.Back
                 token.equals("SEND", ignoreCase = true) -> result += Action.Send
-                token.startsWith("WAIT:", ignoreCase = true) -> {
+                token.matches(Regex("WAIT:\\d+", RegexOption.IGNORE_CASE)) -> {
                     val ms = token.substringAfter(':').toLongOrNull()?.coerceIn(0, 60000) ?: 0L
                     result += Action.Wait(ms)
                 }
@@ -185,6 +192,7 @@ class TyperService : AccessibilityService() {
             onPartComplete()
             return
         }
+
         val node = currentInput()
         if (node == null) {
             lostFocusTicks++
@@ -204,12 +212,11 @@ class TyperService : AccessibilityService() {
                 actionIndex++
                 if (Build.VERSION.SDK_INT >= 30) {
                     node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+                    postDelayForNext()
                 } else {
                     currentText.append('\n')
                     setTextRateLimited(node, base + currentText) { postDelayForNext() }
-                    return
                 }
-                postDelayForNext()
             }
             Action.Back -> {
                 actionIndex++
@@ -217,11 +224,14 @@ class TyperService : AccessibilityService() {
                     val length = currentText.length
                     val from = currentText.offsetByCodePoints(length, -1)
                     currentText.delete(from, length)
-                    setTextRateLimited(node, base + currentText) { postDelayForNext() }
-                    return
+                    setTextRateLimited(node, base + currentText) {
+                        lastTypo = false
+                        postDelayForNext()
+                    }
+                } else {
+                    lastTypo = false
+                    postDelayForNext()
                 }
-                lastTypo = false
-                postDelayForNext()
             }
             is Action.Wait -> {
                 actionIndex++
@@ -229,7 +239,7 @@ class TyperService : AccessibilityService() {
             }
             Action.Send -> {
                 actionIndex++
-                sentInPart = clickSend()
+                sendCurrentPart()
                 postDelayForNext()
             }
         }
@@ -239,7 +249,11 @@ class TyperService : AccessibilityService() {
         val plainCharsInPart = actions.sumOf { action ->
             if (action is Action.Text) action.value.codePointCount(0, action.value.length) else 0
         }
-        val step = if (TyperState.humanize) 1 else if (TyperState.step == 1 && plainCharsInPart > 200) 2 else TyperState.step.coerceAtLeast(1)
+        val step = when {
+            TyperState.humanize -> 1
+            TyperState.step == 1 && plainCharsInPart > 200 -> 2
+            else -> TyperState.step.coerceAtLeast(1)
+        }
         val chunk = StringBuilder()
         var next = actionIndex
         while (next < actions.size && chunk.codePointCount(0, chunk.length) < step) {
@@ -255,34 +269,34 @@ class TyperService : AccessibilityService() {
         }
 
         val codePoint = value.codePointAt(0)
-        val firstOfPart = currentText.isEmpty()
-        val wrong = if (TyperState.humanize && !firstOfPart && !lastTypo &&
+        val isFirstCharacter = currentText.isEmpty()
+        val wrongLetter = if (TyperState.humanize && !isFirstCharacter && !lastTypo &&
             Character.isLetter(codePoint) && Random.nextInt(100) < TyperState.typoPercent.coerceIn(0, 30)
         ) randomWrongLetter(codePoint) else null
 
-        if (wrong != null) {
-            currentText.append(wrong)
+        if (wrongLetter != null) {
+            currentText.append(wrongLetter)
             setTextRateLimited(node, base + currentText) {
                 handler.postDelayed({
                     if (!typing) return@postDelayed
-                    val lastLength = currentText.length
-                    val from = currentText.offsetByCodePoints(lastLength, -1)
-                    currentText.delete(from, lastLength)
-                    val cached = cachedInput
-                    if (cached == null) {
+                    val current = cachedInput
+                    if (current == null) {
                         tick()
                         return@postDelayed
                     }
-                    setTextRateLimited(cached, base + currentText) {
+                    val length = currentText.length
+                    val from = currentText.offsetByCodePoints(length, -1)
+                    currentText.delete(from, length)
+                    setTextRateLimited(current, base + currentText) {
                         handler.postDelayed({
                             if (!typing) return@postDelayed
-                            val current = cachedInput
-                            if (current == null) {
+                            val refreshedInput = cachedInput
+                            if (refreshedInput == null) {
                                 tick()
                                 return@postDelayed
                             }
                             currentText.append(value)
-                            setTextRateLimited(current, base + currentText) {
+                            setTextRateLimited(refreshedInput, base + currentText) {
                                 lastTypo = true
                                 postDelayForNext()
                             }
@@ -321,12 +335,11 @@ class TyperService : AccessibilityService() {
             }).toLong()
         }
         if (TyperState.jitter && delay > 0) delay = (delay * (0.5 + Random.nextDouble())).toLong()
-        handler.postDelayed({ tick() }, delay.coerceAtLeast(MIN_SET_TEXT_INTERVAL_MS))
+        handler.postDelayed({ tick() }, delay.coerceAtLeast(0))
     }
 
     private fun setTextRateLimited(node: AccessibilityNodeInfo, value: CharSequence, after: () -> Unit) {
-        val elapsed = SystemClock.elapsedRealtime() - lastSetTextAt
-        val remaining = MIN_SET_TEXT_INTERVAL_MS - elapsed
+        val remaining = MIN_SET_TEXT_INTERVAL_MS - (SystemClock.elapsedRealtime() - lastSetTextAt)
         if (remaining > 0) {
             handler.postDelayed({
                 if (!typing) return@postDelayed
@@ -347,17 +360,24 @@ class TyperService : AccessibilityService() {
         lastSetTextAt = SystemClock.elapsedRealtime()
     }
 
+    /** Move the cursor only when needed, once per part immediately before sending. */
     private fun moveCursorToEndIfNeeded() {
         val node = cachedInput ?: return
-        val refreshed = try { node.refresh() } catch (_: Exception) { false }
-        if (!refreshed || !node.isEditable || !node.isFocused) return
+        if (!node.isEditable || !node.isFocused) return
         val end = (base + currentText).length
-        if (Build.VERSION.SDK_INT >= 18 && node.textSelectionStart == end && node.textSelectionEnd == end) return
+        if (node.textSelectionStart == end && node.textSelectionEnd == end) return
         val selection = Bundle().apply {
             putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, end)
             putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, end)
         }
         node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selection)
+    }
+
+    private fun sendCurrentPart() {
+        if (sendAttemptedInPart) return
+        moveCursorToEndIfNeeded()
+        sendAttemptedInPart = true
+        clickSend()
     }
 
     private fun onPartComplete() {
@@ -367,11 +387,9 @@ class TyperService : AccessibilityService() {
         }
         handler.postDelayed({
             if (!typing) return@postDelayed
-            if (!sentInPart) {
-                moveCursorToEndIfNeeded()
-                sentInPart = clickSend()
-            }
+            sendCurrentPart()
             if (partIndex == parts.lastIndex) {
+                // No further accessibility work after the final send.
                 finish()
             } else {
                 handler.postDelayed({
@@ -382,7 +400,7 @@ class TyperService : AccessibilityService() {
                     base = ""
                     lostFocusTicks = 0
                     lastTypo = false
-                    sentInPart = false
+                    sendAttemptedInPart = false
                     tick()
                 }, TyperState.pauseMs.coerceIn(0, 60000))
             }
@@ -460,11 +478,5 @@ class TyperService : AccessibilityService() {
         } catch (_: Exception) {
         }
         overlay = null
-    }
-
-    private companion object {
-        const val MIN_SET_TEXT_INTERVAL_MS = 30L
-        const val MAX_SEND_TREE_DEPTH = 40
-        const val MAX_SEND_TREE_NODES = 1500
     }
 }
