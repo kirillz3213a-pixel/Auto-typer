@@ -7,7 +7,6 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.Editable
@@ -15,7 +14,6 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.Window
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -72,7 +70,7 @@ class MainActivity : Activity() {
             text = "AutoTyper"
             textSize = 28f
             setTextColor(light)
-            setTypeface(typeface, Typeface.BOLD)
+            setTypeface(this@MainActivity.typeface, Typeface.BOLD)
         })
 
         val statusRow = LinearLayout(this).apply {
@@ -161,28 +159,23 @@ class MainActivity : Activity() {
         speedCard.addView(jitterCheck, fullWidthParams(bottom = 6))
         sendCheck = checkbox("Автоотправка после ввода", prefs.getBoolean("send", false))
         speedCard.addView(sendCheck, fullWidthParams(bottom = 6))
-
         humanizeCheck = checkbox("Имитация клавиатуры (паузы и опечатки)", prefs.getBoolean("humanize", false))
         speedCard.addView(humanizeCheck, fullWidthParams(bottom = 6))
         typoInput = numericInput(prefs.getInt("typo", 3).toString())
         val typoRow = fieldLabel("Шанс опечатки, %", typoInput)
         speedCard.addView(typoRow, fullWidthParams(bottom = 8))
-        humanizeCheck.setOnCheckedChangeListener { _, checked ->
-            typoRow.visibility = if (checked) View.VISIBLE else View.GONE
-        }
+        humanizeCheck.setOnCheckedChangeListener { _, checked -> typoRow.visibility = if (checked) View.VISIBLE else View.GONE }
         typoRow.visibility = if (humanizeCheck.isChecked) View.VISIBLE else View.GONE
 
         val ready = button("▶  Готово — выбрать поле", primary = true)
         ready.setOnClickListener { arm() }
         root.addView(ready, fullWidthParams(bottom = 8))
-
         val stop = button("■  Стоп", danger = true)
         stop.setOnClickListener {
             TyperService.instance?.disarm()
             refreshStatus()
         }
         root.addView(stop, fullWidthParams(bottom = 10))
-
         root.addView(TextView(this).apply {
             text = "Введи текст, нажми «Готово», затем выбери поле ввода в другом приложении. Красная кнопка поверх экрана остановит набор."
             textSize = 12f
@@ -190,11 +183,10 @@ class MainActivity : Activity() {
             setPadding(dp(2), dp(4), dp(2), 0)
         }, fullWidthParams())
 
-        val savedMode = prefs.getBoolean("split", false)
-        setMode(savedMode)
+        setContentView(scroll)
+        setMode(prefs.getBoolean("split", false))
         updateCounter()
         refreshStatus()
-        setContentView(scroll)
     }
 
     private fun card(parent: LinearLayout, title: String): LinearLayout {
@@ -207,7 +199,7 @@ class MainActivity : Activity() {
             text = title
             textSize = 12f
             setTextColor(muted)
-            setTypeface(typeface, Typeface.BOLD)
+            setTypeface(this@MainActivity.typeface, Typeface.BOLD)
             letterSpacing = 0.08f
             setPadding(0, 0, 0, dp(10))
         })
@@ -219,7 +211,7 @@ class MainActivity : Activity() {
         text = label
         textSize = 14f
         setTextColor(if (selected) Color.WHITE else muted)
-        setTypeface(typeface, if (selected) Typeface.BOLD else Typeface.NORMAL)
+        setTypeface(this@MainActivity.typeface, if (selected) Typeface.BOLD else Typeface.NORMAL)
         transformationMethod = null
         stateListAnimator = null
         background = rounded(if (selected) accent else inputColor, 10)
@@ -229,7 +221,7 @@ class MainActivity : Activity() {
     private fun button(label: String, primary: Boolean = false, outlined: Boolean = false, danger: Boolean = false): Button = Button(this).apply {
         text = label
         textSize = if (primary) 16f else 14f
-        setTypeface(typeface, Typeface.BOLD)
+        setTypeface(this@MainActivity.typeface, Typeface.BOLD)
         transformationMethod = null
         stateListAnimator = null
         isAllCaps = false
@@ -271,13 +263,12 @@ class MainActivity : Activity() {
 
     private fun fieldLabel(label: String, input: EditText): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        val text = TextView(this@MainActivity).apply {
-            this.text = label
+        addView(TextView(this@MainActivity).apply {
+            text = label
             textSize = 12f
             setTextColor(muted)
             setPadding(dp(2), 0, 0, dp(5))
-        }
-        addView(text)
+        })
         addView(input)
     }
 
@@ -301,10 +292,10 @@ class MainActivity : Activity() {
         messageMode = enabledMessages
         normalButton.background = rounded(if (!enabledMessages) accent else inputColor, 10)
         normalButton.setTextColor(if (!enabledMessages) Color.WHITE else muted)
-        normalButton.setTypeface(typeface, if (!enabledMessages) Typeface.BOLD else Typeface.NORMAL)
+        normalButton.setTypeface(this@MainActivity.typeface, if (!enabledMessages) Typeface.BOLD else Typeface.NORMAL)
         messageButton.background = rounded(if (enabledMessages) accent else inputColor, 10)
         messageButton.setTextColor(if (enabledMessages) Color.WHITE else muted)
-        messageButton.setTypeface(typeface, if (enabledMessages) Typeface.BOLD else Typeface.NORMAL)
+        messageButton.setTypeface(this@MainActivity.typeface, if (enabledMessages) Typeface.BOLD else Typeface.NORMAL)
         modeHint.text = if (enabledMessages) {
             "Запятая = конец сообщения. Каждая часть набирается и отправляется отдельно."
         } else {
@@ -328,23 +319,12 @@ class MainActivity : Activity() {
 
     private fun refreshStatus() {
         val running = TyperService.instance != null
-        val text: String
-        val color: Int
-        when {
-            !running -> {
-                text = "Служба выключена"
-                color = muted
-            }
-            TyperState.armed -> {
-                text = "ожидаю тап по полю ввода…"
-                color = accent
-            }
-            else -> {
-                text = "Служба включена · готов к работе"
-                color = green
-            }
+        val (label, color) = when {
+            !running -> "Служба выключена" to muted
+            TyperState.armed -> "ожидаю тап по полю ввода…" to accent
+            else -> "Служба включена · готова к работе" to green
         }
-        statusText.text = text
+        statusText.text = label
         statusText.setTextColor(color)
         statusDot.background = oval(color)
         serviceButton.visibility = if (running) View.GONE else View.VISIBLE
@@ -380,18 +360,14 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Сначала включи службу", Toast.LENGTH_LONG).show()
             return
         }
-
         val value = textInput.text.toString()
         if (value.isBlank()) {
             Toast.makeText(this, "Введи текст", Toast.LENGTH_SHORT).show()
             return
         }
-        if (messageMode) {
-            val parts = value.split(',', '，').map { it.trim() }.filter { it.isNotEmpty() }
-            if (parts.isEmpty()) {
-                Toast.makeText(this, "Добавь хотя бы одно сообщение", Toast.LENGTH_SHORT).show()
-                return
-            }
+        if (messageMode && value.split(',', '，').none { it.trim().isNotEmpty() }) {
+            Toast.makeText(this, "Добавь хотя бы одно сообщение", Toast.LENGTH_SHORT).show()
+            return
         }
 
         save()
@@ -404,7 +380,6 @@ class MainActivity : Activity() {
         TyperState.pauseMs = pauseInput.text.toString().toLongOrNull()?.coerceIn(0, 60000) ?: 800
         TyperState.humanize = humanizeCheck.isChecked
         TyperState.typoPercent = typoInput.text.toString().toIntOrNull()?.coerceIn(0, 30) ?: 3
-
         service.arm()
         Toast.makeText(this, "Открой приложение и тапни по полю ввода", Toast.LENGTH_LONG).show()
         moveTaskToBack(true)
