@@ -3,6 +3,7 @@ package com.autotyper
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -14,6 +15,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
 import android.widget.Toast
 import kotlin.random.Random
+import java.util.Locale
 
 class TyperService : AccessibilityService() {
     companion object {
@@ -25,6 +27,8 @@ class TyperService : AccessibilityService() {
     private var overlay: View? = null
     private var typing = false
     private var checkPending = false
+    private var parts: List<String> = emptyList()
+    private var partIdx = 0
     private var pos = 0
     private var base = ""
     private var lostFocusTicks = 0
@@ -44,6 +48,7 @@ class TyperService : AccessibilityService() {
 
     fun arm() {
         typing = false
+        parts = emptyList()
         TyperState.armed = true
         showOverlay()
     }
@@ -52,6 +57,8 @@ class TyperService : AccessibilityService() {
         TyperState.armed = false
         typing = false
         checkPending = false
+        parts = emptyList()
+        partIdx = 0
         handler.removeCallbacksAndMessages(null)
         hideOverlay()
     }
@@ -82,6 +89,18 @@ class TyperService : AccessibilityService() {
         if (!TyperState.armed || typing) return
         val node = focusedInput() ?: return
         if (node.packageName == packageName) return
+
+        parts = if (TyperState.splitMode) {
+            TyperState.text.split(',', '，').map { it.trim() }.filter { it.isNotEmpty() }
+        } else {
+            listOf(TyperState.text)
+        }
+        if (parts.isEmpty()) {
+            disarm()
+            return
+        }
+
+        partIdx = 0
         base = if (node.isShowingHintText) "" else node.text?.toString() ?: ""
         pos = 0
         lostFocusTicks = 0
@@ -91,11 +110,16 @@ class TyperService : AccessibilityService() {
 
     private fun tick() {
         if (!typing) return
-        val full = TyperState.text
-        if (pos >= full.length) {
-            finish()
+        if (partIdx !in parts.indices) {
+            disarm()
             return
         }
+        val full = parts[partIdx]
+        if (pos >= full.length) {
+            onPartComplete()
+            return
+        }
+
         val node = focusedInput()
         if (node == null) {
             lostFocusTicks++
@@ -126,6 +150,61 @@ class TyperService : AccessibilityService() {
         var d = TyperState.delayMs
         if (TyperState.jitter && d > 0) d = (d * (0.5 + Random.nextDouble())).toLong()
         handler.postDelayed({ tick() }, d)
+    }
+
+    private fun onPartComplete() {
+        if (!TyperState.autoSend && !TyperState.splitMode) {
+            finish()
+            return
+        }
+        handler.postDelayed({
+            if (!typing) return@postDelayed
+            clickSend()
+            if (partIdx == parts.lastIndex) {
+                finish()
+            } else {
+                handler.postDelayed({
+                    if (!typing) return@postDelayed
+                    partIdx++
+                    pos = 0
+                    base = ""
+                    lostFocusTicks = 0
+                    tick()
+                }, TyperState.pauseMs)
+            }
+        }, 400)
+    }
+
+    private fun clickSend(): Boolean {
+        val root = rootInActiveWindow
+        if (root != null && clickSendInTree(root)) return true
+        if (Build.VERSION.SDK_INT >= 30) {
+            return focusedInput()?.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id) == true
+        }
+        return false
+    }
+
+    private fun clickSendInTree(node: AccessibilityNodeInfo): Boolean {
+        if (!node.isEditable) {
+            val shortText = node.text?.toString()?.takeIf { it.length <= 12 }.orEmpty()
+            val label = "${node.contentDescription ?: ""} ${node.viewIdResourceName ?: ""} $shortText"
+                .lowercase(Locale.ROOT)
+            val sendLabels = listOf("send", "отправ", "надісл", "надсил", "відправ", "submit")
+            if (sendLabels.any { label.contains(it) }) {
+                var clickable: AccessibilityNodeInfo? = node
+                while (clickable != null) {
+                    if (clickable.isClickable && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                        return true
+                    }
+                    clickable = clickable.parent
+                }
+            }
+        }
+        for (index in 0 until node.childCount) {
+            val child = node.getChild(index) ?: continue
+            if (clickSendInTree(child)) return true
+        }
+        return false
     }
 
     private fun finish() {

@@ -21,7 +21,10 @@ class MainActivity : Activity() {
     private lateinit var etText: EditText
     private lateinit var etDelay: EditText
     private lateinit var etStep: EditText
+    private lateinit var etPause: EditText
     private lateinit var cbJitter: CheckBox
+    private lateinit var cbAutoSend: CheckBox
+    private lateinit var cbSplitMode: CheckBox
 
     private val prefs by lazy { getSharedPreferences("typer", Context.MODE_PRIVATE) }
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -79,6 +82,26 @@ class MainActivity : Activity() {
             isChecked = prefs.getBoolean("jitter", true)
         }
         root.addView(cbJitter)
+
+        cbAutoSend = CheckBox(this).apply {
+            text = "Автоотправка после ввода"
+            isChecked = prefs.getBoolean("send", false)
+        }
+        root.addView(cbAutoSend)
+
+        cbSplitMode = CheckBox(this).apply {
+            text = "Режим сообщений: запятая = новое сообщение"
+            isChecked = prefs.getBoolean("split", false)
+        }
+        root.addView(cbSplitMode)
+
+        etPause = EditText(this).apply {
+            hint = "Пауза между сообщениями, мс"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(prefs.getLong("pause", 800).toString())
+        }
+        root.addView(etPause)
+
         root.addView(Button(this).apply {
             text = "2. ▶ ГОТОВО — выбрать поле"
             setOnClickListener { arm() }
@@ -116,6 +139,9 @@ class MainActivity : Activity() {
             .putLong("delay", etDelay.text.toString().toLongOrNull() ?: 40)
             .putInt("step", etStep.text.toString().toIntOrNull() ?: 1)
             .putBoolean("jitter", cbJitter.isChecked)
+            .putBoolean("send", cbAutoSend.isChecked)
+            .putBoolean("split", cbSplitMode.isChecked)
+            .putLong("pause", (etPause.text.toString().toLongOrNull() ?: 800).coerceIn(0, 60000))
             .apply()
     }
 
@@ -144,6 +170,9 @@ class MainActivity : Activity() {
         TyperState.delayMs = (etDelay.text.toString().toLongOrNull() ?: 40).coerceIn(0, 5000)
         TyperState.step = (etStep.text.toString().toIntOrNull() ?: 1).coerceIn(1, 500)
         TyperState.jitter = cbJitter.isChecked
+        TyperState.splitMode = cbSplitMode.isChecked
+        TyperState.pauseMs = (etPause.text.toString().toLongOrNull() ?: 800).coerceIn(0, 60000)
+        TyperState.autoSend = cbAutoSend.isChecked || cbSplitMode.isChecked
         service.arm()
         Toast.makeText(this, "Открой приложение и тапни по полю ввода", Toast.LENGTH_LONG).show()
         moveTaskToBack(true)
