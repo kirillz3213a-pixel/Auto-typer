@@ -1,165 +1,168 @@
 package com.autotyper
 
-import android.app.Activity
-import android.content.Context
-import android.content.Intent
-import android.graphics.Typeface
+import android.accessibilityservice.AccessibilityService
+import android.graphics.Color
+import android.graphics.PixelFormat
 import android.os.Bundle
-import android.provider.Settings
-import android.text.InputType
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
-import android.widget.CheckBox
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
+import kotlin.random.Random
 
-class MainActivity : Activity() {
+class TyperService : AccessibilityService() {
+    companion object {
+        @Volatile
+        var instance: TyperService? = null
+    }
 
-    private lateinit var status: TextView
-    private lateinit var etText: EditText
-    private lateinit var etDelay: EditText
-    private lateinit var etStep: EditText
-    private lateinit var cbJitter: CheckBox
+    private val handler = Handler(Looper.getMainLooper())
+    private var overlay: View? = null
+    private var typing = false
+    private var checkPending = false
+    private var pos = 0
+    private var base = ""
+    private var lostFocusTicks = 0
 
-    private val prefs by lazy { getSharedPreferences("typer", Context.MODE_PRIVATE) }
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+    }
 
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    override fun onUnbind(intent: android.content.Intent?): Boolean {
+        disarm()
+        instance = null
+        return super.onUnbind(intent)
+    }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onInterrupt() {}
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(24), dp(16), dp(16))
-        }
+    fun arm() {
+        typing = false
+        TyperState.armed = true
+        showOverlay()
+    }
 
-        root.addView(TextView(this).apply {
-            text = "AutoTyper"
-            textSize = 24f
-            setTypeface(typeface, Typeface.BOLD)
-        })
+    fun disarm() {
+        TyperState.armed = false
+        typing = false
+        checkPending = false
+        handler.removeCallbacksAndMessages(null)
+        hideOverlay()
+    }
 
-        status = TextView(this).apply {
-            textSize = 14f
-            setPadding(0, dp(8), 0, dp(8))
-        }
-        root.addView(status)
-
-        root.addView(Button(this).apply {
-            text = "1. Включить службу (Специальные возможности)"
-            setOnClickListener {
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        if (!TyperState.armed || typing) return
+        if (event.packageName == packageName) return
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_VIEW_FOCUSED,
+            AccessibilityEvent.TYPE_VIEW_CLICKED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED -> {
+                if (checkPending) return
+                checkPending = true
+                handler.postDelayed({
+                    checkPending = false
+                    tryStart()
+                }, 150)
             }
-        })
-
-        etText = EditText(this).apply {
-            hint = "Текст для ввода (любой язык, код, эмодзи)"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 6
-            maxLines = 12
-            gravity = Gravity.TOP or Gravity.START
-            setText(prefs.getString("text", ""))
-        }
-        root.addView(etText, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
-
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        etDelay = EditText(this).apply {
-            hint = "Задержка, мс"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setText(prefs.getLong("delay", 40).toString())
-        }
-        etStep = EditText(this).apply {
-            hint = "Символов за шаг"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setText(prefs.getInt("step", 1).toString())
-        }
-        row.addView(etDelay, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(etStep, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        root.addView(row)
-
-        cbJitter = CheckBox(this).apply {
-            text = "Случайная вариация скорости"
-            isChecked = prefs.getBoolean("jitter", true)
-        }
-        root.addView(cbJitter)
-
-        root.addView(Button(this).apply {
-            text = "2. ▶ ГОТОВО — выбрать поле"
-            setOnClickListener { arm() }
-        })
-
-        root.addView(Button(this).apply {
-            text = "■ Стоп"
-            setOnClickListener {
-                TyperService.instance?.disarm()
-                refreshStatus()
-            }
-        })
-
-        root.addView(TextView(this).apply {
-            text = "Как пользоваться: введи текст → «ГОТОВО» → приложение свернётся → " +
-                "открой любое приложение, тапни по полю ввода — текст начнёт печататься. " +
-                "Красная кнопка «СТОП» висит поверх экрана."
-            textSize = 13f
-            setPadding(0, dp(12), 0, 0)
-        })
-
-        setContentView(ScrollView(this).apply { addView(root) })
-    }
-
-    override fun onResume() {
-        super.onResume()
-        refreshStatus()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        save()
-    }
-
-    private fun save() {
-        prefs.edit()
-            .putString("text", etText.text.toString())
-            .putLong("delay", etDelay.text.toString().toLongOrNull() ?: 40)
-            .putInt("step", etStep.text.toString().toIntOrNull() ?: 1)
-            .putBoolean("jitter", cbJitter.isChecked)
-            .apply()
-    }
-
-    private fun refreshStatus() {
-        val on = TyperService.instance != null
-        status.text = when {
-            !on -> "Служба выключена — включи AutoTyper в Специальных возможностях"
-            TyperState.armed -> "Служба включена · ожидаю тап по полю ввода…"
-            else -> "Служба включена · готов к работе"
         }
     }
 
-    private fun arm() {
-        val service = TyperService.instance
-        if (service == null) {
-            Toast.makeText(this, "Сначала включи службу (шаг 1)", Toast.LENGTH_LONG).show()
+    private fun focusedInput(): AccessibilityNodeInfo? {
+        val node = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        return if (node != null && node.isEditable) node else null
+    }
+
+    private fun tryStart() {
+        if (!TyperState.armed || typing) return
+        val node = focusedInput() ?: return
+        if (node.packageName == packageName) return
+        base = if (node.isShowingHintText) "" else node.text?.toString() ?: ""
+        pos = 0
+        lostFocusTicks = 0
+        typing = true
+        tick()
+    }
+
+    private fun tick() {
+        if (!typing) return
+        val full = TyperState.text
+        if (pos >= full.length) {
+            finish()
             return
         }
-        val text = etText.text.toString()
-        if (text.isEmpty()) {
-            Toast.makeText(this, "Введи текст", Toast.LENGTH_SHORT).show()
+        val node = focusedInput()
+        if (node == null) {
+            lostFocusTicks++
+            if (lostFocusTicks > 40) {
+                Toast.makeText(this, "Поле потеряно — остановлено", Toast.LENGTH_SHORT).show()
+                disarm()
+                return
+            }
+            handler.postDelayed({ tick() }, 250)
             return
         }
-        save()
-        TyperState.text = text
-        TyperState.delayMs = (etDelay.text.toString().toLongOrNull() ?: 40).coerceIn(0, 5000)
-        TyperState.step = (etStep.text.toString().toIntOrNull() ?: 1).coerceIn(1, 500)
-        TyperState.jitter = cbJitter.isChecked
+        lostFocusTicks = 0
+        var end = pos
+        repeat(TyperState.step.coerceAtLeast(1)) {
+            if (end < full.length) end = full.offsetByCodePoints(end, 1)
+        }
+        pos = end
+        val result = base + full.substring(0, pos)
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, result)
+        }
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        val sel = Bundle().apply {
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, result.length)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, result.length)
+        }
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel)
+        var d = TyperState.delayMs
+        if (TyperState.jitter && d > 0) d = (d * (0.5 + Random.nextDouble())).toLong()
+        handler.postDelayed({ tick() }, d)
+    }
 
-        service.arm()
-        Toast.makeText(this, "Открой приложение и тапни по полю ввода", Toast.LENGTH_LONG).show()
-        moveTaskToBack(true)
+    private fun finish() {
+        Toast.makeText(this, "Готово ✓", Toast.LENGTH_SHORT).show()
+        disarm()
+    }
+
+    private fun showOverlay() {
+        if (overlay != null) return
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val btn = Button(this).apply {
+            text = "■ СТОП"
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#D32F2F"))
+            setOnClickListener { disarm() }
+        }
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.END
+            y = 160
+            x = 16
+        }
+        wm.addView(btn, lp)
+        overlay = btn
+    }
+
+    private fun hideOverlay() {
+        val v = overlay ?: return
+        try {
+            (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(v)
+        } catch (_: Exception) {
+        }
+        overlay = null
     }
 }
