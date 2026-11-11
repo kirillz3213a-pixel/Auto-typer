@@ -4,10 +4,13 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.database.Cursor
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -21,6 +24,11 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 
 class MainActivity : Activity() {
     private val bg = Color.rgb(15, 17, 21)
@@ -39,12 +47,14 @@ class MainActivity : Activity() {
     private lateinit var messageButton: Button
     private lateinit var modeHint: TextView
     private lateinit var textInput: EditText
+    private lateinit var fileInfo: TextView
     private lateinit var counter: TextView
     private lateinit var delayInput: EditText
     private lateinit var stepInput: EditText
     private lateinit var pauseInput: EditText
     private lateinit var jitterCheck: CheckBox
     private lateinit var sendCheck: CheckBox
+    private lateinit var newlineCheck: CheckBox
     private lateinit var humanizeCheck: CheckBox
     private lateinit var typoInput: EditText
     private lateinit var pauseRow: View
@@ -126,6 +136,21 @@ class MainActivity : Activity() {
             setText(prefs.getString("text", ""))
         }
         textCard.addView(textInput, fullWidthParams(bottom = 8))
+        val loadButton = button("📄 Загрузить .txt", outlined = true)
+        loadButton.setOnClickListener {
+            val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "text/plain"
+            }
+            startActivityForResult(picker, REQUEST_OPEN_TEXT)
+        }
+        textCard.addView(loadButton, fullWidthParams(bottom = 7))
+        fileInfo = TextView(this).apply {
+            textSize = 12f
+            setTextColor(muted)
+            visibility = View.GONE
+        }
+        textCard.addView(fileInfo, fullWidthParams(bottom = 7))
         counter = TextView(this).apply {
             textSize = 12f
             setTextColor(muted)
@@ -154,6 +179,8 @@ class MainActivity : Activity() {
         pauseInput = numericInput(prefs.getLong("pause", 800).toString())
         pauseRow = fieldLabel("Пауза между сообщениями, мс", pauseInput)
         speedCard.addView(pauseRow, fullWidthParams(bottom = 8))
+        newlineCheck = checkbox("Новая строка = новое сообщение", prefs.getBoolean("newline", false))
+        speedCard.addView(newlineCheck, fullWidthParams(bottom = 6))
 
         jitterCheck = checkbox("Случайная вариация скорости", prefs.getBoolean("jitter", true))
         speedCard.addView(jitterCheck, fullWidthParams(bottom = 6))
@@ -187,7 +214,119 @@ class MainActivity : Activity() {
         setMode(prefs.getBoolean("split", false))
         updateCounter()
         refreshStatus()
+        handleIncomingIntent(intent)
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    @Deprecated("Deprecated in Android API, required for document picker compatibility")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_OPEN_TEXT && resultCode == RESULT_OK) {
+            data?.data?.let(::loadTextUri)
+        }
+    }
+
+    private fun handleIncomingIntent(incoming: Intent?) {
+        if (incoming == null || !::textInput.isInitialized) return
+        when (incoming.action) {
+            Intent.ACTION_SEND -> {
+                val uri = incoming.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                    ?: incoming.clipData?.getItemAt(0)?.uri
+                if (uri != null) {
+                    loadTextUri(uri)
+                } else {
+                    val shared = incoming.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString() ?: return
+                    loadSharedText(shared)
+                }
+            }
+            Intent.ACTION_VIEW -> incoming.data?.let(::loadTextUri)
+        }
+    }
+
+    private fun loadSharedText(shared: String) {
+        Thread {
+            try {
+                val bytes = shared.toByteArray(StandardCharsets.UTF_8)
+                if (bytes.size > MAX_TEXT_BYTES) {
+                    runOnUiThread { Toast.makeText(this, "Файл слишком большой", Toast.LENGTH_LONG).show() }
+                    return@Thread
+                }
+                val decoded = decodeText(bytes)
+                runOnUiThread {
+                    textInput.setText(decoded)
+                    fileInfo.text = "Текст · ${formatCount(decoded.codePointCount(0, decoded.length))} символов"
+                    fileInfo.visibility = View.VISIBLE
+                }
+            } catch (_: Exception) {
+                runOnUiThread { Toast.makeText(this, "Не удалось прочитать файл", Toast.LENGTH_LONG).show() }
+            }
+        }.start()
+    }
+
+    private fun loadTextUri(uri: Uri) {
+        Thread {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > MAX_TEXT_BYTES) {
+                            runOnUiThread { Toast.makeText(this, "Файл слишком большой", Toast.LENGTH_LONG).show() }
+                            return@Thread
+                        }
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                } ?: throw IllegalStateException("Unable to open selected file")
+                val decoded = decodeText(bytes)
+                val name = queryDisplayName(uri)
+                runOnUiThread {
+                    textInput.setText(decoded)
+                    fileInfo.text = "$name · ${formatCount(decoded.codePointCount(0, decoded.length))} символов"
+                    fileInfo.visibility = View.VISIBLE
+                }
+            } catch (_: Exception) {
+                runOnUiThread { Toast.makeText(this, "Не удалось прочитать файл", Toast.LENGTH_LONG).show() }
+            }
+        }.start()
+    }
+
+    private fun decodeText(source: ByteArray): String {
+        val bytes = if (source.size >= 3 &&
+            source[0] == 0xEF.toByte() && source[1] == 0xBB.toByte() && source[2] == 0xBF.toByte()
+        ) source.copyOfRange(3, source.size) else source
+        return try {
+            StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes)).toString()
+        } catch (_: CharacterCodingException) {
+            String(bytes, Charset.forName("windows-1251"))
+        }
+    }
+
+    private fun queryDisplayName(uri: Uri): String {
+        var name: String? = null
+        val cursor: Cursor? = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        cursor?.use {
+            if (it.moveToFirst()) {
+                val index = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index >= 0) name = it.getString(index)
+            }
+        }
+        return name?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "Текстовый файл"
+    }
+
+    private fun formatCount(count: Int): String = String.format(java.util.Locale.getDefault(), "%,d", count).replace(',', ' ')
 
     private fun card(parent: LinearLayout, title: String): LinearLayout {
         val card = LinearLayout(this).apply {
@@ -303,14 +442,23 @@ class MainActivity : Activity() {
         }
         pauseRow.visibility = if (enabledMessages) View.VISIBLE else View.GONE
         sendCheck.visibility = if (enabledMessages) View.GONE else View.VISIBLE
+        newlineCheck.visibility = if (enabledMessages) View.VISIBLE else View.GONE
         updateCounter()
+    }
+
+    private fun messageParts(text: String): List<String> {
+        val parts = if (newlineCheck.isChecked) {
+            text.split(Regex("[,，\\r\\n]+"))
+        } else {
+            text.split(',', '，')
+        }
+        return parts.map { it.trim() }.filter { it.isNotEmpty() }
     }
 
     private fun updateCounter() {
         val text = textInput.text?.toString() ?: ""
         if (messageMode) {
-            val count = text.split(',', '，').count { it.trim().isNotEmpty() }
-            counter.text = "Сообщений: $count"
+            counter.text = "Сообщений: ${messageParts(text).size}"
         } else {
             val cleaned = text.replace(Regex("\\{(?:ENTER|BACK|SEND|WAIT:\\d+)\\}", RegexOption.IGNORE_CASE), "")
             counter.text = "Символов: ${cleaned.length}"
@@ -348,6 +496,7 @@ class MainActivity : Activity() {
             .putBoolean("jitter", jitterCheck.isChecked)
             .putBoolean("send", sendCheck.isChecked)
             .putBoolean("split", messageMode)
+            .putBoolean("newline", newlineCheck.isChecked)
             .putLong("pause", pauseInput.text.toString().toLongOrNull()?.coerceIn(0, 60000) ?: 800)
             .putBoolean("humanize", humanizeCheck.isChecked)
             .putInt("typo", typoInput.text.toString().toIntOrNull()?.coerceIn(0, 30) ?: 3)
@@ -365,7 +514,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Введи текст", Toast.LENGTH_SHORT).show()
             return
         }
-        if (messageMode && value.split(',', '，').none { it.trim().isNotEmpty() }) {
+        if (messageMode && messageParts(value).isEmpty()) {
             Toast.makeText(this, "Добавь хотя бы одно сообщение", Toast.LENGTH_SHORT).show()
             return
         }
@@ -376,6 +525,7 @@ class MainActivity : Activity() {
         TyperState.step = stepInput.text.toString().toIntOrNull()?.coerceIn(1, 500) ?: 1
         TyperState.jitter = jitterCheck.isChecked
         TyperState.splitMode = messageMode
+        TyperState.splitNewline = newlineCheck.isChecked
         TyperState.autoSend = sendCheck.isChecked || messageMode
         TyperState.pauseMs = pauseInput.text.toString().toLongOrNull()?.coerceIn(0, 60000) ?: 800
         TyperState.humanize = humanizeCheck.isChecked
@@ -383,5 +533,10 @@ class MainActivity : Activity() {
         service.arm()
         Toast.makeText(this, "Открой приложение и тапни по полю ввода", Toast.LENGTH_LONG).show()
         moveTaskToBack(true)
+    }
+
+    companion object {
+        private const val REQUEST_OPEN_TEXT = 42
+        private const val MAX_TEXT_BYTES = 1024 * 1024
     }
 }

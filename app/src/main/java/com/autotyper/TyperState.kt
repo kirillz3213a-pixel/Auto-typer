@@ -1,6 +1,6 @@
 package com.autotyper
 
-/** Shared settings/state between the activity and accessibility service. */
+/** Shared settings/state between the activity and the accessibility service. */
 object TyperState {
     @Volatile var text: String = ""
     @Volatile var delayMs: Long = 40
@@ -9,6 +9,7 @@ object TyperState {
     @Volatile var armed: Boolean = false
     @Volatile var autoSend: Boolean = false
     @Volatile var splitMode: Boolean = false
+    @Volatile var splitNewline: Boolean = false
     @Volatile var pauseMs: Long = 800
     @Volatile var humanize: Boolean = false
     @Volatile var typoPercent: Int = 3

@@ -106,15 +106,10 @@ class TyperService : AccessibilityService() {
         return if (node != null && node.isEditable && node.isFocused) node else null
     }
 
-    /** Reuse the cached node; traverse the window only when it has gone stale or lost focus. */
     private fun currentInput(): AccessibilityNodeInfo? {
         val cached = cachedInput
         if (cached != null) {
-            val refreshed = try {
-                cached.refresh()
-            } catch (_: Exception) {
-                false
-            }
+            val refreshed = try { cached.refresh() } catch (_: Exception) { false }
             if (refreshed && cached.isEditable && cached.isFocused) return cached
         }
         return focusedInput().also { cachedInput = it }
@@ -126,7 +121,12 @@ class TyperService : AccessibilityService() {
         if (node.packageName == packageName) return
 
         val rawParts = if (TyperState.splitMode) {
-            TyperState.text.split(',', '，').map { it.trim() }.filter { it.isNotEmpty() }
+            val split = if (TyperState.splitNewline) {
+                TyperState.text.split(Regex("[,，\\r\\n]+"))
+            } else {
+                TyperState.text.split(',', '，')
+            }
+            split.map { it.trim() }.filter { it.isNotEmpty() }
         } else {
             listOf(TyperState.text)
         }
@@ -360,7 +360,6 @@ class TyperService : AccessibilityService() {
         lastSetTextAt = SystemClock.elapsedRealtime()
     }
 
-    /** Move the cursor only when needed, once per part immediately before sending. */
     private fun moveCursorToEndIfNeeded() {
         val node = cachedInput ?: return
         if (!node.isEditable || !node.isFocused) return
@@ -389,7 +388,6 @@ class TyperService : AccessibilityService() {
             if (!typing) return@postDelayed
             sendCurrentPart()
             if (partIndex == parts.lastIndex) {
-                // No further accessibility work after the final send.
                 finish()
             } else {
                 handler.postDelayed({
