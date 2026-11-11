@@ -10,4 +10,6 @@ object TyperState {
     @Volatile var autoSend: Boolean = false
     @Volatile var splitMode: Boolean = false
     @Volatile var pauseMs: Long = 800
+    @Volatile var humanize: Boolean = false
+    @Volatile var typoPercent: Int = 3
 }
