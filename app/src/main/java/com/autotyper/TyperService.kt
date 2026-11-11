@@ -115,7 +115,7 @@ class TyperService : AccessibilityService() {
         partIndex = 0
         actionIndex = 0
         currentText = StringBuilder()
-        base = if (Build.VERSION.SDK_INT >= 26 && node.isShowingHintText) "" else node.text?.toString() ?: ""
+        base = ""
         lostFocusTicks = 0
         lastTypo = false
         typing = true
@@ -127,9 +127,7 @@ class TyperService : AccessibilityService() {
         var cursor = 0
         val regex = Regex("\\{([^\\}]+)\\}")
         for (match in regex.findAll(input)) {
-            val before = input.substring(cursor, match.range.first)
-            appendText(result, before)
-
+            appendText(result, input.substring(cursor, match.range.first))
             val token = match.groupValues[1].trim()
             when {
                 token.equals("ENTER", ignoreCase = true) -> result += Action.Enter
@@ -162,13 +160,11 @@ class TyperService : AccessibilityService() {
             finish()
             return
         }
-
         val actions = parts[partIndex]
         if (actionIndex >= actions.size) {
             onPartComplete()
             return
         }
-
         val node = focusedInput()
         if (node == null) {
             lostFocusTicks++
@@ -197,9 +193,9 @@ class TyperService : AccessibilityService() {
             Action.Back -> {
                 actionIndex++
                 if (currentText.isNotEmpty()) {
-                    val lastCodeIndex = currentText.length
-                    val deleteFrom = currentText.offsetByCodePoints(lastCodeIndex, -1)
-                    currentText.delete(deleteFrom, lastCodeIndex)
+                    val lastLength = currentText.length
+                    val from = currentText.offsetByCodePoints(lastLength, -1)
+                    currentText.delete(from, lastLength)
                     setTextAndCursor(node, base + currentText)
                 }
                 lastTypo = false
@@ -218,81 +214,73 @@ class TyperService : AccessibilityService() {
     }
 
     private fun handleTextAction(node: AccessibilityNodeInfo, actions: List<Action>) {
+        val maxChars = if (TyperState.humanize) 1 else TyperState.step.coerceAtLeast(1)
         val chunk = StringBuilder()
-        var index = actionIndex
-        var count = 0
-        while (index < actions.size && count < TyperState.step.coerceAtLeast(1)) {
-            val current = actions[index]
-            if (current !is Action.Text) break
-            chunk.append(current.value)
-            index++
-            count++
+        var next = actionIndex
+        while (next < actions.size && chunk.codePointCount(0, chunk.length) < maxChars) {
+            val charAction = actions[next] as? Action.Text ?: break
+            chunk.append(charAction.value)
+            next++
         }
-        actionIndex = index
-        val nextValue = chunk.toString()
-        if (nextValue.isEmpty()) {
-            if (actionIndex < actions.size) tick() else onPartComplete()
+        actionIndex = next
+        val value = chunk.toString()
+        if (value.isEmpty()) {
+            tick()
             return
         }
 
-        if (TyperState.humanize) {
-            val firstChar = nextValue.firstOrNull() ?: return
-            val shouldTypo = firstChar.isLetter() && !lastTypo &&
-                (currentText.isNotEmpty() || partIndex > 0) &&
-                Random.nextInt(100) < TyperState.typoPercent.coerceIn(0, 30)
-            if (shouldTypo) {
-                val wrong = randomWrongLetter(firstChar) ?: nextValue
-                currentText.append(wrong)
-                setTextAndCursor(node, base + currentText)
-                val notice = Random.nextLong(150, 401)
+        val char = value.codePointAt(0)
+        val firstOfPart = currentText.isEmpty()
+        val shouldTypo = TyperState.humanize && !firstOfPart && !lastTypo &&
+            Character.isLetter(char) && Random.nextInt(100) < TyperState.typoPercent.coerceIn(0, 30)
+        val wrong = if (shouldTypo) randomWrongLetter(char) else null
+        if (wrong != null) {
+            currentText.append(wrong)
+            setTextAndCursor(node, base + currentText)
+            handler.postDelayed({
+                if (!typing) return@postDelayed
+                currentText.delete(currentText.length - wrong.length, currentText.length)
+                focusedInput()?.let { setTextAndCursor(it, base + currentText) }
                 handler.postDelayed({
                     if (!typing) return@postDelayed
-                    val lastLength = currentText.length
-                    val delFrom = currentText.offsetByCodePoints(lastLength, -1)
-                    currentText.delete(delFrom, lastLength)
-                    setTextAndCursor(node, base + currentText)
-                    handler.postDelayed({
-                        if (!typing) return@postDelayed
-                        currentText.append(nextValue)
-                        setTextAndCursor(node, base + currentText)
-                        lastTypo = true
-                        postDelayForNext()
-                    }, Random.nextLong(80, 201))
-                }, notice)
-                return
-            }
+                    focusedInput()?.let {
+                        currentText.append(value)
+                        setTextAndCursor(it, base + currentText)
+                    }
+                    lastTypo = true
+                    postDelayForNext()
+                }, Random.nextLong(80, 201))
+            }, Random.nextLong(150, 401))
+        } else {
+            currentText.append(value)
+            setTextAndCursor(node, base + currentText)
+            lastTypo = false
+            postDelayForNext()
         }
-
-        currentText.append(nextValue)
-        setTextAndCursor(node, base + currentText)
-        lastTypo = false
-        postDelayForNext()
     }
 
-    private fun randomWrongLetter(ch: Char): String? {
-        val source = when {
-            ch in 'а'..'я' || ch in 'А'..'Я' || ch == 'ё' || ch == 'Ё' -> "йцукенгшщзхфывапролджэячсмитьбю"
-            ch in 'a'..'z' || ch in 'A'..'Z' -> "qwertyuiopasdfghjklzxcvbnm"
-            else -> null
-        } ?: return null
-        val wrong = source.random().toString()
-        return if (ch.isUpperCase()) wrong.uppercase(Locale.ROOT) else wrong
+    private fun randomWrongLetter(codePoint: Int): String? {
+        val alphabet = when (codePoint) {
+            in 0x0400..0x052F -> "йцукенгшщзхфывапролджэячсмитьбю"
+            in 0x0041..0x007A -> "qwertyuiopasdfghjklzxcvbnm"
+            else -> return null
+        }
+        var wrong = alphabet.random().toString()
+        if (Character.isUpperCase(codePoint)) wrong = wrong.uppercase(Locale.ROOT)
+        return wrong
     }
 
     private fun postDelayForNext() {
         var delay = TyperState.delayMs
         if (TyperState.humanize && currentText.isNotEmpty()) {
-            val lastChar = currentText.last()
-            delay = when (lastChar) {
-                ' ' -> (delay * 1.6).toLong()
-                ',', '.', '!', '?', ':', ';' -> (delay * 2.5).toLong()
-                '\n' -> (delay * 3.0).toLong()
-                else -> delay
-            }
+            delay = (delay * when (currentText.last()) {
+                ' ' -> 1.6
+                ',', '.', '!', '?', ':', ';' -> 2.5
+                '\n' -> 3.0
+                else -> 1.0
+            }).toLong()
         }
-        if (TyperState.jitter && delay > 0) {
-            delay = (delay * (0.5 + Random.nextDouble())).toLong()
-        }
+        if (TyperState.jitter && delay > 0) delay = (delay * (0.5 + Random.nextDouble())).toLong()
         handler.postDelayed({ tick() }, delay.coerceAtLeast(0))
     }
 
@@ -347,18 +335,15 @@ class TyperService : AccessibilityService() {
             val shortText = node.text?.toString()?.takeIf { it.length <= 12 }.orEmpty()
             val label = "${node.contentDescription ?: ""} ${node.viewIdResourceName ?: ""} $shortText"
                 .lowercase(Locale.ROOT)
-            val keywords = listOf("send", "отправ", "надісл", "надсил", "відправ", "submit")
-            if (keywords.any { label.contains(it) }) {
+            val keys = listOf("send", "отправ", "надісл", "надсил", "відправ", "submit")
+            if (keys.any(label::contains)) {
                 var candidate: AccessibilityNodeInfo? = node
                 while (candidate != null) {
-                    if (candidate.isClickable && candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                        return true
-                    }
+                    if (candidate.isClickable && candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
                     candidate = candidate.parent
                 }
             }
         }
-
         for (index in 0 until node.childCount) {
             val child = node.getChild(index) ?: continue
             if (clickSendInTree(child)) return true
