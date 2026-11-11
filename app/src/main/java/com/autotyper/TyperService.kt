@@ -271,7 +271,7 @@ class TyperService : AccessibilityService() {
 
     private fun randomWrongLetter(ch: Char): String? {
         val source = when {
-            ch in 'а'..'я' || ch in 'А'..'Я' || ch in 'ё' || ch in 'Ё' -> "йцукенгшщзхфывапролджэячсмитьбю"
+            ch in 'а'..'я' || ch in 'А'..'Я' || ch == 'ё' || ch == 'Ё' -> "йцукенгшщзхфывапролджэячсмитьбю"
             ch in 'a'..'z' || ch in 'A'..'Z' -> "qwertyuiopasdfghjklzxcvbnm"
             else -> null
         } ?: return null
