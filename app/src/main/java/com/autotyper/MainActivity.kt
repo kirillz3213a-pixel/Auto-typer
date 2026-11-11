@@ -184,7 +184,7 @@ class MainActivity : Activity() {
         root.addView(stop, fullWidthParams(bottom = 10))
 
         root.addView(TextView(this).apply {
-            text = "Введи текст, нажми «Готово», затем выбери поле ввода в другом приложении. Красная кнопка поверх экрана остановит набор."
+            text = "Введи текст, нажми «Готово», затем выбери поле ввода в другом приложении. Красная кнопка поверх [...]"
             textSize = 12f
             setTextColor(muted)
             setPadding(dp(2), dp(4), dp(2), 0)
@@ -301,10 +301,10 @@ class MainActivity : Activity() {
         messageMode = enabledMessages
         normalButton.background = rounded(if (!enabledMessages) accent else inputColor, 10)
         normalButton.setTextColor(if (!enabledMessages) Color.WHITE else muted)
-        normalButton.setTypeface(typeface, if (!enabledMessages) Typeface.BOLD else Typeface.NORMAL)
+        normalButton.setTypeface(normalButton.typeface, if (!enabledMessages) Typeface.BOLD else Typeface.NORMAL)
         messageButton.background = rounded(if (enabledMessages) accent else inputColor, 10)
         messageButton.setTextColor(if (enabledMessages) Color.WHITE else muted)
-        messageButton.setTypeface(typeface, if (enabledMessages) Typeface.BOLD else Typeface.NORMAL)
+        messageButton.setTypeface(messageButton.typeface, if (enabledMessages) Typeface.BOLD else Typeface.NORMAL)
         modeHint.text = if (enabledMessages) {
             "Запятая = конец сообщения. Каждая часть набирается и отправляется отдельно."
         } else {
