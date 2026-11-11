@@ -70,7 +70,7 @@ class MainActivity : Activity() {
             text = "AutoTyper"
             textSize = 28f
             setTextColor(light)
-            setTypeface(this@MainActivity.typeface, Typeface.BOLD)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
         })
 
         val statusRow = LinearLayout(this).apply {
@@ -199,7 +199,7 @@ class MainActivity : Activity() {
             text = title
             textSize = 12f
             setTextColor(muted)
-            setTypeface(this@MainActivity.typeface, Typeface.BOLD)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
             letterSpacing = 0.08f
             setPadding(0, 0, 0, dp(10))
         })
@@ -211,7 +211,7 @@ class MainActivity : Activity() {
         text = label
         textSize = 14f
         setTextColor(if (selected) Color.WHITE else muted)
-        setTypeface(this@MainActivity.typeface, if (selected) Typeface.BOLD else Typeface.NORMAL)
+        setTypeface(Typeface.DEFAULT, if (selected) Typeface.BOLD else Typeface.NORMAL)
         transformationMethod = null
         stateListAnimator = null
         background = rounded(if (selected) accent else inputColor, 10)
@@ -221,7 +221,7 @@ class MainActivity : Activity() {
     private fun button(label: String, primary: Boolean = false, outlined: Boolean = false, danger: Boolean = false): Button = Button(this).apply {
         text = label
         textSize = if (primary) 16f else 14f
-        setTypeface(this@MainActivity.typeface, Typeface.BOLD)
+        setTypeface(Typeface.DEFAULT, Typeface.BOLD)
         transformationMethod = null
         stateListAnimator = null
         isAllCaps = false
@@ -292,10 +292,10 @@ class MainActivity : Activity() {
         messageMode = enabledMessages
         normalButton.background = rounded(if (!enabledMessages) accent else inputColor, 10)
         normalButton.setTextColor(if (!enabledMessages) Color.WHITE else muted)
-        normalButton.setTypeface(this@MainActivity.typeface, if (!enabledMessages) Typeface.BOLD else Typeface.NORMAL)
+        normalButton.setTypeface(Typeface.DEFAULT, if (!enabledMessages) Typeface.BOLD else Typeface.NORMAL)
         messageButton.background = rounded(if (enabledMessages) accent else inputColor, 10)
         messageButton.setTextColor(if (enabledMessages) Color.WHITE else muted)
-        messageButton.setTypeface(this@MainActivity.typeface, if (enabledMessages) Typeface.BOLD else Typeface.NORMAL)
+        messageButton.setTypeface(Typeface.DEFAULT, if (enabledMessages) Typeface.BOLD else Typeface.NORMAL)
         modeHint.text = if (enabledMessages) {
             "Запятая = конец сообщения. Каждая часть набирается и отправляется отдельно."
         } else {
