@@ -104,12 +104,13 @@ class TyperService : AccessibilityService() {
     }
 
     private fun currentInput(): AccessibilityNodeInfo? {
-        val cached = cachedInput
-        if (cached != null) {
-            val refreshed = try { cached.refresh() } catch (_: Exception) { false }
-            if (refreshed && cached.isEditable && cached.isFocused) return cached
+        focusedInput()?.let {
+            cachedInput = it
+            return it
         }
-        return focusedInput().also { cachedInput = it }
+        val cached = cachedInput ?: return null
+        val refreshed = try { cached.refresh() } catch (_: Exception) { false }
+        return if (refreshed && cached.isEditable && cached.isFocused) cached else null
     }
 
     private fun tryStart() {
@@ -275,12 +276,12 @@ class TyperService : AccessibilityService() {
     }
 
     private fun fieldIsEmpty(): Boolean {
-        val cached = cachedInput
-        val input = if (cached != null && try { cached.refresh() && cached.isEditable } catch (_: Exception) { false }) {
+        val input = focusedInput() ?: run {
+            val cached = cachedInput ?: return true
+            val refreshed = try { cached.refresh() } catch (_: Exception) { false }
+            if (!refreshed || !cached.isEditable) return true
             cached
-        } else {
-            focusedInput()
-        } ?: return true
+        }
         if (input.isShowingHintText) return true
         val text = input.text?.toString().orEmpty()
         val hint = input.hintText?.toString()
@@ -328,7 +329,6 @@ class TyperService : AccessibilityService() {
         val activeRoot = rootInActiveWindow
         val activeInput = activeRoot?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable } ?: cachedInput
         val tried = mutableSetOf<String>()
-
         val keywords = mutableListOf<HookNode>()
         val visited = intArrayOf(0)
         for ((root, pkg) in roots) collectKeywordCandidates(root, pkg, 0, visited, keywords)
@@ -337,7 +337,6 @@ class TyperService : AccessibilityService() {
             val target = firstClickableParent(candidate.node) ?: continue
             if (clickNodeOnce(target, inputForRoot(roots, candidate.packageName), tried)) return true
         }
-
         val heuristic = mutableListOf<HeuristicNode>()
         val heuristicVisited = intArrayOf(0)
         for ((root, pkg) in roots) {
@@ -351,7 +350,6 @@ class TyperService : AccessibilityService() {
             val target = firstClickableParent(candidate.node) ?: continue
             if (clickNodeOnce(target, inputForRoot(roots, candidate.packageName), tried)) return true
         }
-
         if (Build.VERSION.SDK_INT >= 30) {
             val input = activeInput ?: roots.asSequence().mapNotNull { (root, _) ->
                 try { root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) } catch (_: Exception) { null }
