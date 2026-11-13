@@ -3,6 +3,7 @@ package com.autotyper
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -34,6 +35,13 @@ class TyperService : AccessibilityService() {
         data class Wait(val ms: Long) : Action()
         object Send : Action()
     }
+
+    private data class SendCandidate(
+        val node: AccessibilityNodeInfo,
+        val exactLabel: Boolean,
+        val right: Int,
+        val bottom: Int
+    )
 
     private val handler = Handler(Looper.getMainLooper())
     private var overlay: View? = null
@@ -407,37 +415,95 @@ class TyperService : AccessibilityService() {
 
     private fun clickSend(): Boolean {
         val root = rootInActiveWindow
-        if (root != null && clickSendInTree(root, 0, intArrayOf(0))) return true
+        if (root != null) {
+            val input = cachedInput ?: focusedInput()
+            val rootBounds = Rect()
+            root.getBoundsInScreen(rootBounds)
+            val screenWidth = maxOf(rootBounds.right, resources.displayMetrics.widthPixels)
+            val candidates = mutableListOf<SendCandidate>()
+            collectSendCandidates(root, 0, intArrayOf(0), candidates)
+
+            val best = candidates
+                .filter { candidate ->
+                    val clickTarget = firstClickableParent(candidate.node) ?: return@filter false
+                    if (input != null) {
+                        val inputBounds = Rect()
+                        input.getBoundsInScreen(inputBounds)
+                        val clickBounds = Rect()
+                        clickTarget.getBoundsInScreen(clickBounds)
+                        val inputIsWide = inputBounds.width() > screenWidth / 2
+                        val clickCenterX = clickBounds.centerX()
+                        if (inputIsWide && clickCenterX < screenWidth / 2) return@filter false
+                    }
+                    true
+                }
+                .sortedWith(
+                    compareByDescending<SendCandidate> { it.exactLabel }
+                        .thenByDescending { it.right }
+                        .thenByDescending { it.bottom }
+                )
+                .firstOrNull()
+
+            if (best != null) {
+                val clickable = firstClickableParent(best.node)
+                if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            }
+        }
         if (Build.VERSION.SDK_INT >= 30) {
-            return cachedInput?.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id) == true
+            return focusedInput()?.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id) == true
         }
         return false
     }
 
-    private fun clickSendInTree(node: AccessibilityNodeInfo, depth: Int, visited: IntArray): Boolean {
-        if (depth > MAX_SEND_TREE_DEPTH || visited[0] >= MAX_SEND_TREE_NODES) return false
+    private fun collectSendCandidates(
+        node: AccessibilityNodeInfo,
+        depth: Int,
+        visited: IntArray,
+        candidates: MutableList<SendCandidate>
+    ) {
+        if (depth > MAX_SEND_TREE_DEPTH || visited[0] >= MAX_SEND_TREE_NODES) return
         visited[0]++
         if (!node.isEditable) {
-            val shortText = node.text?.toString()?.takeIf { it.length <= 12 }.orEmpty()
-            val label = "${node.contentDescription ?: ""} ${node.viewIdResourceName ?: ""} $shortText"
+            val contentDescription = node.contentDescription?.toString().orEmpty()
+            val text = node.text?.toString().orEmpty()
+            val shortText = text.takeIf { it.length <= 12 }.orEmpty()
+            val label = "$contentDescription ${node.viewIdResourceName ?: ""} $shortText"
                 .lowercase(Locale.ROOT)
-            val keywords = listOf("send", "отправ", "надісл", "надсил", "відправ", "submit")
-            if (keywords.any(label::contains)) {
-                var candidate: AccessibilityNodeInfo? = node
-                var parentDepth = 0
-                while (candidate != null && parentDepth <= MAX_SEND_TREE_DEPTH) {
-                    if (candidate.isClickable && candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-                    candidate = candidate.parent
-                    parentDepth++
-                }
+            val matchFragments = listOf("send", "отправ", "надісл", "надсил", "відправ", "submit")
+            val excludedFragments = listOf(
+                "send as", "send_as", "sendas", "as_", "от имени", "от лица", "від імені",
+                "написать от", "написати від", "schedule", "запланир", "заплан", "voice",
+                "audio", "голос", "attach", "вложен", "вкладен", "emoji", "sticker", "стикер"
+            )
+            if (matchFragments.any(label::contains) && excludedFragments.none(label::contains)) {
+                val exactLabels = setOf("send", "отправить", "надіслати", "відправити", "отправка", "submit")
+                val exact = contentDescription.trim().equalsAnyIgnoreCase(exactLabels) ||
+                    (text.length <= 12 && text.trim().equalsAnyIgnoreCase(exactLabels))
+                val bounds = Rect()
+                node.getBoundsInScreen(bounds)
+                candidates += SendCandidate(node, exact, bounds.right, bounds.bottom)
             }
         }
+        if (depth >= MAX_SEND_TREE_DEPTH) return
         for (index in 0 until node.childCount) {
-            if (visited[0] >= MAX_SEND_TREE_NODES || depth >= MAX_SEND_TREE_DEPTH) break
+            if (visited[0] >= MAX_SEND_TREE_NODES) break
             val child = node.getChild(index) ?: continue
-            if (clickSendInTree(child, depth + 1, visited)) return true
+            collectSendCandidates(child, depth + 1, visited, candidates)
         }
-        return false
+    }
+
+    private fun String.equalsAnyIgnoreCase(values: Set<String>): Boolean =
+        values.any { equals(it, ignoreCase = true) }
+
+    private fun firstClickableParent(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (current != null && depth <= MAX_SEND_TREE_DEPTH) {
+            if (current.isClickable) return current
+            current = current.parent
+            depth++
+        }
+        return null
     }
 
     private fun finish() {
