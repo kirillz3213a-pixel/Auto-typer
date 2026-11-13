@@ -275,7 +275,12 @@ class TyperService : AccessibilityService() {
     }
 
     private fun fieldIsEmpty(): Boolean {
-        val input = currentInput() ?: return true
+        val cached = cachedInput
+        val input = if (cached != null && try { cached.refresh() && cached.isEditable } catch (_: Exception) { false }) {
+            cached
+        } else {
+            focusedInput()
+        } ?: return true
         if (input.isShowingHintText) return true
         val text = input.text?.toString().orEmpty()
         val hint = input.hintText?.toString()
