@@ -50,6 +50,7 @@ class MainActivity : Activity() {
     private lateinit var textInput: EditText
     private lateinit var fileInfo: TextView
     private lateinit var counter: TextView
+    private lateinit var learnedCount: TextView
     private lateinit var delayInput: EditText
     private lateinit var stepInput: EditText
     private lateinit var pauseInput: EditText
@@ -137,6 +138,37 @@ class MainActivity : Activity() {
             setText(prefs.getString("text", ""))
         }
         textCard.addView(textInput, fullWidthParams(bottom = 8))
+
+        val learnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val learnButton = button("🎯 Обучить кнопку отправки", outlined = true)
+        learnButton.setOnClickListener {
+            val service = TyperService.instance
+            if (service == null) {
+                Toast.makeText(this, "Сначала включи службу", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
+            service.startLearn()
+            Toast.makeText(this, "Подождите…", Toast.LENGTH_SHORT).show()
+            moveTaskToBack(true)
+        }
+        learnButton.setTextSize(12f)
+        learnButton.minHeight = dp(42)
+        val resetButton = button("Сбросить", outlined = true)
+        resetButton.setOnClickListener {
+            val rules = getSharedPreferences("send_rules", MODE_PRIVATE)
+            rules.edit().clear().apply()
+            refreshLearnedCount()
+            Toast.makeText(this, "Правила сброшены", Toast.LENGTH_SHORT).show()
+        }
+        resetButton.setTextSize(12f)
+        resetButton.minHeight = dp(42)
+        learnRow.addView(learnButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(8) })
+        learnRow.addView(resetButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        textCard.addView(learnRow, fullWidthParams(bottom = 7))
+
         val loadButton = button("📄 Загрузить .txt", outlined = true)
         loadButton.setOnClickListener {
             val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -146,6 +178,7 @@ class MainActivity : Activity() {
             startActivityForResult(picker, REQUEST_OPEN_TEXT)
         }
         textCard.addView(loadButton, fullWidthParams(bottom = 7))
+
         fileInfo = TextView(this).apply {
             textSize = 12f
             setTextColor(muted)
@@ -157,6 +190,11 @@ class MainActivity : Activity() {
             setTextColor(muted)
         }
         textCard.addView(counter, fullWidthParams(bottom = 5))
+        learnedCount = TextView(this).apply {
+            textSize = 12f
+            setTextColor(muted)
+        }
+        textCard.addView(learnedCount, fullWidthParams(bottom = 5))
         textCard.addView(TextView(this).apply {
             text = "Спец. клавиши: {ENTER} {BACK} {WAIT:500} {SEND}"
             textSize = 12f
@@ -205,7 +243,7 @@ class MainActivity : Activity() {
         }
         root.addView(stop, fullWidthParams(bottom = 10))
         root.addView(TextView(this).apply {
-            text = "Введи текст, нажми «Готово», затем выбери поле ввода в другом приложении. Красная кнопка поверх экрана остановит набор."
+            text = "Введи текст, нажми «Готово», затем выбери поле ввода в другом приложении. Красная кнопка поверх …"
             textSize = 12f
             setTextColor(muted)
             setPadding(dp(2), dp(4), dp(2), 0)
@@ -215,6 +253,7 @@ class MainActivity : Activity() {
         setMode(prefs.getBoolean("split", false))
         updateCounter()
         refreshStatus()
+        refreshLearnedCount()
         handleIncomingIntent(intent)
     }
 
@@ -327,7 +366,7 @@ class MainActivity : Activity() {
         return name?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "Текстовый файл"
     }
 
-    private fun formatCount(count: Int): String = String.format(java.util.Locale.getDefault(), "%,d", count).replace(',', ' ')
+    private fun formatCount(count: Int): String = String.format(java.util.Locale.getDefault(), "%d", count).replace(',', ' ')
 
     private fun card(parent: LinearLayout, title: String): LinearLayout {
         val card = LinearLayout(this).apply {
@@ -466,6 +505,11 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun refreshLearnedCount() {
+        val count = getSharedPreferences("send_rules", MODE_PRIVATE).all.size
+        learnedCount.text = "Обучено приложений: $count"
+    }
+
     private fun refreshStatus() {
         val running = TyperService.instance != null
         val (label, color) = when {
@@ -482,6 +526,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refreshStatus()
+        refreshLearnedCount()
     }
 
     override fun onPause() {
